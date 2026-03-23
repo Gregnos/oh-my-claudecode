@@ -119,7 +119,7 @@ state files for the current session:
 ```bash
 # Fallback: direct file removal when state_clear MCP tool is unavailable
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || { d="$PWD"; while [ "$d" != "/" ] && [ ! -d "$d/.omc" ]; do d="$(dirname "$d")"; done; echo "$d"; })"
 OMC_STATE="$REPO_ROOT/.omc/state"
 
 # Clear session-scoped state
