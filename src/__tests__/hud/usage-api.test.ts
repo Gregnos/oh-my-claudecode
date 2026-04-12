@@ -1034,6 +1034,16 @@ describe('getUsage routing - minimax', () => {
     expect(callArgs.headers.Authorization).toBe('Bearer test-auth-token');
   });
 
+  it('returns no_credentials when minimax host detected but no API key', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://api.minimax.io/anthropic';
+    // Neither MINIMAX_API_KEY nor ANTHROPIC_AUTH_TOKEN set
+
+    const result = await getUsage();
+    expect(result.rateLimits).toBeNull();
+    expect(result.error).toBe('no_credentials');
+    expect(httpsModule.default.request).not.toHaveBeenCalled();
+  });
+
   it('does NOT route to minimax for look-alike hosts', async () => {
     process.env.ANTHROPIC_BASE_URL = 'https://minimax.io.evil.tld/v1';
     process.env.MINIMAX_API_KEY = 'test-key';

@@ -1041,7 +1041,7 @@ export async function getUsage(): Promise<UsageResult> {
   const isZai = baseUrl != null && isZaiHost(baseUrl);
   const minimaxApiKey = process.env.MINIMAX_API_KEY || authToken;
   const currentSource: 'anthropic' | 'zai' | 'minimax' =
-    isMinimax && minimaxApiKey ? 'minimax' : isZai && authToken ? 'zai' : 'anthropic';
+    isMinimax ? 'minimax' : isZai && authToken ? 'zai' : 'anthropic';
   const pollIntervalMs = getUsagePollIntervalMs();
 
   // Migrate legacy single-file cache to provider-specific file (one-shot, best-effort)
@@ -1060,7 +1060,11 @@ export async function getUsage(): Promise<UsageResult> {
       }
 
       // MiniMax path (must precede z.ai and OAuth checks)
-      if (isMinimax && minimaxApiKey) {
+      if (isMinimax) {
+        if (!minimaxApiKey) {
+          writeCache({ data: null, error: true, source: 'minimax', errorReason: 'no_credentials' });
+          return { rateLimits: null, error: 'no_credentials' };
+        }
         return fetchAndCacheUsage({
           source: 'minimax',
           fetchFn: () => fetchUsageFromMinimax(minimaxApiKey),
