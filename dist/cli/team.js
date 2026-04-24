@@ -513,7 +513,7 @@ Usage:
   omc team [ralph] <N:agent-type[:role]> "task" [--json] [--cwd DIR] [--new-window]
 
 Worktrees:
-  Native per-worker git worktrees are opt-in/config-gated with team.ops.worktreeMode or OMC_TEAM_WORKTREE_MODE=detached|branch.
+  Native per-worker git worktree mode is opt-in/config-gated with team.ops.worktreeMode or OMC_TEAM_WORKTREE_MODE=detached|named.
   Status JSON includes workspaceMode, worktreeMode, teamStateRoot, and per-worker worktree metadata.
 
 Examples:
@@ -525,9 +525,9 @@ Examples:
   omc team api list-tasks --input '{"teamName":"auth-review"}' --json
   omc team 3:codex "refactor launch command"
 
-Notes:
-  Native team worktree mode is opt-in/config-gated during rollout.
-  team status JSON includes workspace mode, canonical state root, and worker worktree metadata when present.
+Worktree mode:
+  Native worker worktrees are opt-in/config-gated for runtime-v2.
+  Status surfaces workspace_mode, worktree_mode, team_state_root, and worker worktree metadata when enabled.
 `.trim();
 function parseStartArgs(args) {
     const agentValues = [];

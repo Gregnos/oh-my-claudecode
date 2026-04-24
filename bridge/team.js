@@ -5000,36 +5000,47 @@ function assertCleanLeaderWorktree(repoRoot) {
     throw error;
   }
 }
+function getRegisteredWorktreeBranch(repoRoot, wtPath) {
+  try {
+    const output2 = git(repoRoot, ["worktree", "list", "--porcelain"]);
+    const resolvedWtPath = resolve3(wtPath);
+    let currentMatches = false;
+    for (const line of output2.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        currentMatches = resolve3(line.slice("worktree ".length).trim()) === resolvedWtPath;
+        continue;
+      }
+      if (!currentMatches) continue;
+      if (line.startsWith("branch ")) return line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      if (line === "detached") return "HEAD";
+    }
+  } catch {
+  }
+  return void 0;
+}
 function isRegisteredWorktreePath(repoRoot, wtPath) {
   try {
     const output2 = git(repoRoot, ["worktree", "list", "--porcelain"]);
     const resolvedWtPath = resolve3(wtPath);
-    for (const line of output2.split("\n")) {
-      if (!line.startsWith("worktree ")) continue;
-      if (resolve3(line.slice("worktree ".length).trim()) === resolvedWtPath) {
-        return true;
-      }
-    }
-  } catch {
-  }
-  return false;
-}
-function isWorktreeDirty(wtPath) {
-  try {
-    return git(wtPath, ["status", "--porcelain"], wtPath).length > 0;
+    return output2.split("\n").some((line) => line.startsWith("worktree ") && resolve3(line.slice("worktree ".length).trim()) === resolvedWtPath);
   } catch {
     return false;
   }
 }
-function currentBranch(wtPath) {
+function isDetached(wtPath) {
   try {
-    return git(wtPath, ["rev-parse", "--abbrev-ref", "HEAD"], wtPath);
+    const branch = execFileSync3("git", ["branch", "--show-current"], { cwd: wtPath, encoding: "utf-8", stdio: "pipe" }).trim();
+    return branch.length === 0;
   } catch {
-    return "";
+    return false;
   }
 }
-function isDetached(wtPath) {
-  return currentBranch(wtPath) === "HEAD";
+function isWorktreeDirty(wtPath) {
+  try {
+    return execFileSync3("git", ["status", "--porcelain"], { cwd: wtPath, encoding: "utf-8", stdio: "pipe" }).trim().length > 0;
+  } catch {
+    return true;
+  }
 }
 function getMetadataPath(repoRoot, teamName) {
   return join15(repoRoot, ".omc", "state", "team", sanitizeName(teamName), "worktrees.json");
@@ -5062,22 +5073,20 @@ function writeMetadata(repoRoot, teamName, entries) {
 function recordMetadata(repoRoot, teamName, info) {
   const metaLockPath = getMetadataPath(repoRoot, teamName) + ".lock";
   withFileLockSync(metaLockPath, () => {
-    const existing = readMetadata(repoRoot, teamName);
-    const updated = existing.filter((e) => e.workerName !== info.workerName);
-    updated.push(info);
-    writeMetadata(repoRoot, teamName, updated);
+    const existing = readMetadata(repoRoot, teamName).filter((entry) => entry.workerName !== info.workerName);
+    writeMetadata(repoRoot, teamName, [...existing, info]);
   });
 }
 function forgetMetadata(repoRoot, teamName, workerName) {
   const metaLockPath = getMetadataPath(repoRoot, teamName) + ".lock";
   withFileLockSync(metaLockPath, () => {
-    const existing = readMetadata(repoRoot, teamName);
-    const updated = existing.filter((e) => e.workerName !== workerName);
-    writeMetadata(repoRoot, teamName, updated);
+    const existing = readMetadata(repoRoot, teamName).filter((entry) => entry.workerName !== workerName);
+    writeMetadata(repoRoot, teamName, existing);
   });
 }
-function assertCompatibleExistingWorktree(repoRoot, wtPath, branch, mode) {
-  if (!isRegisteredWorktreePath(repoRoot, wtPath)) {
+function assertCompatibleExistingWorktree(repoRoot, wtPath, expectedBranch, mode) {
+  const registeredBranch = getRegisteredWorktreeBranch(repoRoot, wtPath);
+  if (!registeredBranch) {
     const error = new Error(`worktree_path_mismatch: existing path is not a registered git worktree: ${wtPath}`);
     error.code = "worktree_path_mismatch";
     throw error;
@@ -5087,15 +5096,14 @@ function assertCompatibleExistingWorktree(repoRoot, wtPath, branch, mode) {
     error.code = "worktree_dirty";
     throw error;
   }
-  const detached = isDetached(wtPath);
-  if (mode === "detached" && !detached) {
-    const error = new Error(`worktree_mode_mismatch: expected detached worktree at ${wtPath}`);
-    error.code = "worktree_mode_mismatch";
+  if (mode === "named" && registeredBranch !== expectedBranch) {
+    const error = new Error(`worktree_mismatch: expected branch ${expectedBranch} at ${wtPath}, found ${registeredBranch}`);
+    error.code = "worktree_mismatch";
     throw error;
   }
-  if (mode === "branch" && currentBranch(wtPath) !== branch) {
-    const error = new Error(`worktree_branch_mismatch: expected ${branch} at ${wtPath}`);
-    error.code = "worktree_branch_mismatch";
+  if (mode === "detached" && registeredBranch !== "HEAD") {
+    const error = new Error(`worktree_mismatch: expected detached worktree at ${wtPath}, found ${registeredBranch}`);
+    error.code = "worktree_mismatch";
     throw error;
   }
 }
@@ -5103,7 +5111,7 @@ function normalizeTeamWorktreeMode(value) {
   if (typeof value !== "string") return "disabled";
   const normalized = value.trim().toLowerCase();
   if (["1", "true", "yes", "on", "enabled", "detached"].includes(normalized)) return "detached";
-  if (["branch", "named", "named-branch"].includes(normalized)) return "branch";
+  if (["branch", "named", "named-branch"].includes(normalized)) return "named";
   return "disabled";
 }
 function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
@@ -5116,7 +5124,7 @@ function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
     assertCleanLeaderWorktree(repoRoot);
   }
   const wtPath = getWorktreePath(repoRoot, teamName, workerName);
-  const branch = mode === "branch" ? getBranchName(teamName, workerName) : "HEAD";
+  const branch = mode === "named" ? getBranchName(teamName, workerName) : "HEAD";
   validateResolvedPath(wtPath, repoRoot);
   try {
     execFileSync3("git", ["worktree", "prune"], { cwd: repoRoot, stdio: "pipe" });
@@ -5141,7 +5149,7 @@ function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
   }
   const wtDir = join15(repoRoot, ".omc", "team", sanitizeName(teamName), "worktrees");
   ensureDirWithMode(wtDir);
-  const args = mode === "branch" ? ["worktree", "add", "-b", branch, wtPath, options.baseRef ?? "HEAD"] : ["worktree", "add", "--detach", wtPath, options.baseRef ?? "HEAD"];
+  const args = mode === "named" ? ["worktree", "add", "-b", branch, wtPath, options.baseRef ?? "HEAD"] : ["worktree", "add", "--detach", wtPath, options.baseRef ?? "HEAD"];
   execFileSync3("git", args, { cwd: repoRoot, stdio: "pipe" });
   const info = {
     path: wtPath,
@@ -5159,7 +5167,7 @@ function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
   return info;
 }
 function removeWorkerWorktree(teamName, workerName, repoRoot) {
-  const wtPath = getWorkerWorktreePath(repoRoot, teamName, workerName);
+  const wtPath = getWorktreePath(repoRoot, teamName, workerName);
   const branch = getBranchName(teamName, workerName);
   if (existsSync10(wtPath) && isWorktreeDirty(wtPath)) {
     const error = new Error(`worktree_dirty: preserving dirty worker worktree at ${wtPath}`);
@@ -5184,8 +5192,6 @@ function removeWorkerWorktree(teamName, workerName, repoRoot) {
   forgetMetadata(repoRoot, teamName, workerName);
 }
 function cleanupTeamWorktrees(teamName, repoRoot) {
-  const removed = [];
-  const preserved = [];
   const entries = readMetadata(repoRoot, teamName);
   const removed = [];
   const preserved = [];
@@ -6523,8 +6529,7 @@ async function startTeamV2(config) {
     resize_hook_name: null,
     resize_hook_target: null,
     resolved_routing: resolvedRouting,
-    workspace_mode: workspaceMode,
-    worktree_mode: worktreeMode
+    ...ownsWindow ? { workspace_mode: "single", worktree_mode: "disabled" } : {}
   };
   await saveTeamConfig(teamConfig, leaderCwd);
   const permissionsSnapshot = {
@@ -8530,10 +8535,16 @@ async function teamStatusByTeamName(teamName, cwd = process.cwd()) {
       workerPaneIds: Array.from(new Set(
         (config?.workers ?? []).map((worker) => worker.pane_id).filter((paneId) => typeof paneId === "string" && paneId.trim().length > 0)
       )),
-      workspaceMode: config?.workspace_mode,
-      worktreeMode: config?.worktree_mode,
-      teamStateRoot: config?.team_state_root,
-      workers: config?.workers ?? [],
+      workers: (config?.workers ?? []).map((worker) => ({
+        name: worker.name,
+        working_dir: worker.working_dir,
+        worktree_repo_root: worker.worktree_repo_root,
+        worktree_path: worker.worktree_path,
+        worktree_branch: worker.worktree_branch,
+        worktree_detached: worker.worktree_detached,
+        worktree_created: worker.worktree_created,
+        team_state_root: worker.team_state_root
+      })),
       snapshot: snapshot2
     };
   }
@@ -8673,7 +8684,7 @@ Usage:
   omc team [ralph] <N:agent-type[:role]> "task" [--json] [--cwd DIR] [--new-window]
 
 Worktrees:
-  Native per-worker git worktrees are opt-in/config-gated with team.ops.worktreeMode or OMC_TEAM_WORKTREE_MODE=detached|branch.
+  Native per-worker git worktree mode is opt-in/config-gated with team.ops.worktreeMode or OMC_TEAM_WORKTREE_MODE=detached|named.
   Status JSON includes workspaceMode, worktreeMode, teamStateRoot, and per-worker worktree metadata.
 
 Examples:
@@ -8685,9 +8696,9 @@ Examples:
   omc team api list-tasks --input '{"teamName":"auth-review"}' --json
   omc team 3:codex "refactor launch command"
 
-Notes:
-  Native team worktree mode is opt-in/config-gated during rollout.
-  team status JSON includes workspace mode, canonical state root, and worker worktree metadata when present.
+Worktree mode:
+  Native worker worktrees are opt-in/config-gated for runtime-v2.
+  Status surfaces workspace_mode, worktree_mode, team_state_root, and worker worktree metadata when enabled.
 `.trim();
 function parseStartArgs(args) {
   const agentValues = [];

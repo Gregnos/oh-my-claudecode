@@ -1,4 +1,4 @@
-export type TeamWorktreeMode = 'disabled' | 'detached' | 'branch';
+export type TeamWorktreeMode = 'disabled' | 'detached' | 'named';
 export interface WorktreeInfo {
     path: string;
     branch: string;
@@ -41,7 +41,7 @@ export declare function normalizeTeamWorktreeMode(value: unknown): TeamWorktreeM
  * dirty or mismatched existing worktrees throw without deleting files.
  */
 export declare function ensureWorkerWorktree(teamName: string, workerName: string, repoRoot: string, options?: EnsureWorkerWorktreeOptions): EnsureWorkerWorktreeResult | null;
-/** Legacy creation helper: create or reuse a branch-mode worker worktree. */
+/** Legacy creation helper: create or reuse a named-branch worker worktree. */
 export declare function createWorkerWorktree(teamName: string, workerName: string, repoRoot: string, baseBranch?: string): WorktreeInfo;
 /** Remove a worker's worktree and branch, preserving dirty worktrees. */
 export declare function removeWorkerWorktree(teamName: string, workerName: string, repoRoot: string): void;

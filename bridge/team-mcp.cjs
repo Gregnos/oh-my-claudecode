@@ -18435,21 +18435,16 @@ function isRegisteredWorktreePath(repoRoot, wtPath) {
   try {
     const output = git(repoRoot, ["worktree", "list", "--porcelain"]);
     const resolvedWtPath = (0, import_node_path.resolve)(wtPath);
-    for (const line of output.split("\n")) {
-      if (!line.startsWith("worktree ")) continue;
-      if ((0, import_node_path.resolve)(line.slice("worktree ".length).trim()) === resolvedWtPath) {
-        return true;
-      }
-    }
+    return output.split("\n").some((line) => line.startsWith("worktree ") && (0, import_node_path.resolve)(line.slice("worktree ".length).trim()) === resolvedWtPath);
   } catch {
+    return false;
   }
-  return false;
 }
 function isWorktreeDirty(wtPath) {
   try {
-    return git(wtPath, ["status", "--porcelain"], wtPath).length > 0;
+    return (0, import_node_child_process.execFileSync)("git", ["status", "--porcelain"], { cwd: wtPath, encoding: "utf-8", stdio: "pipe" }).trim().length > 0;
   } catch {
-    return false;
+    return true;
   }
 }
 function getMetadataPath(repoRoot, teamName) {
@@ -18483,13 +18478,12 @@ function writeMetadata(repoRoot, teamName, entries) {
 function forgetMetadata(repoRoot, teamName, workerName) {
   const metaLockPath = getMetadataPath(repoRoot, teamName) + ".lock";
   withFileLockSync(metaLockPath, () => {
-    const existing = readMetadata(repoRoot, teamName);
-    const updated = existing.filter((e) => e.workerName !== workerName);
-    writeMetadata(repoRoot, teamName, updated);
+    const existing = readMetadata(repoRoot, teamName).filter((entry) => entry.workerName !== workerName);
+    writeMetadata(repoRoot, teamName, existing);
   });
 }
 function removeWorkerWorktree(teamName, workerName, repoRoot) {
-  const wtPath = getWorkerWorktreePath(repoRoot, teamName, workerName);
+  const wtPath = getWorktreePath(repoRoot, teamName, workerName);
   const branch = getBranchName(teamName, workerName);
   if ((0, import_node_fs.existsSync)(wtPath) && isWorktreeDirty(wtPath)) {
     const error2 = new Error(`worktree_dirty: preserving dirty worker worktree at ${wtPath}`);
@@ -18514,8 +18508,6 @@ function removeWorkerWorktree(teamName, workerName, repoRoot) {
   forgetMetadata(repoRoot, teamName, workerName);
 }
 function cleanupTeamWorktrees(teamName, repoRoot) {
-  const removed = [];
-  const preserved = [];
   const entries = readMetadata(repoRoot, teamName);
   const removed = [];
   const preserved = [];

@@ -105,6 +105,37 @@ function getRegisteredWorktreeBranch(repoRoot: string, wtPath: string): string |
   return undefined;
 }
 
+
+function isRegisteredWorktreePath(repoRoot: string, wtPath: string): boolean {
+  try {
+    const output = git(repoRoot, ['worktree', 'list', '--porcelain']);
+    const resolvedWtPath = resolve(wtPath);
+    return output.split('\n').some(line => (
+      line.startsWith('worktree ') && resolve(line.slice('worktree '.length).trim()) === resolvedWtPath
+    ));
+  } catch {
+    return false;
+  }
+}
+
+
+function isDetached(wtPath: string): boolean {
+  try {
+    const branch = execFileSync('git', ['branch', '--show-current'], { cwd: wtPath, encoding: 'utf-8', stdio: 'pipe' }).trim();
+    return branch.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isWorktreeDirty(wtPath: string): boolean {
+  try {
+    return execFileSync('git', ['status', '--porcelain'], { cwd: wtPath, encoding: 'utf-8', stdio: 'pipe' }).trim().length > 0;
+  } catch {
+    return true;
+  }
+}
+
 /** Get worktree metadata path. */
 function getMetadataPath(repoRoot: string, teamName: string): string {
   return join(repoRoot, '.omc', 'state', 'team', sanitizeName(teamName), 'worktrees.json');
@@ -161,16 +192,16 @@ function assertCompatibleExistingWorktree(
   expectedBranch: string,
   mode: TeamWorktreeMode,
 ): void {
-  if (isWorktreeDirty(wtPath)) {
-    const error = new Error(`worktree_dirty: preserving dirty worker worktree at ${wtPath}`);
-    (error as Error & { code?: string }).code = 'worktree_dirty';
+  const registeredBranch = getRegisteredWorktreeBranch(repoRoot, wtPath);
+  if (!registeredBranch) {
+    const error = new Error(`worktree_path_mismatch: existing path is not a registered git worktree: ${wtPath}`);
+    (error as Error & { code?: string }).code = 'worktree_path_mismatch';
     throw error;
   }
 
-  const registeredBranch = getRegisteredWorktreeBranch(repoRoot, wtPath);
-  if (!registeredBranch) {
-    const error = new Error(`worktree_mismatch: existing path is not a registered git worktree: ${wtPath}`);
-    (error as Error & { code?: string }).code = 'worktree_mismatch';
+  if (isWorktreeDirty(wtPath)) {
+    const error = new Error(`worktree_dirty: preserving dirty worker worktree at ${wtPath}`);
+    (error as Error & { code?: string }).code = 'worktree_dirty';
     throw error;
   }
 
