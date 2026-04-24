@@ -28086,7 +28086,7 @@ async function saveTeamConfig(config2, cwd2) {
 }
 async function withScalingLock(teamName, cwd2, fn, timeoutMs = 1e4) {
   const lockDir = absPath(cwd2, TeamPaths.scalingLock(teamName));
-  const { mkdir: mkdirAsync, rm: rm4 } = await import("fs/promises");
+  const { mkdir: mkdirAsync, rm: rm5 } = await import("fs/promises");
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -28094,7 +28094,7 @@ async function withScalingLock(teamName, cwd2, fn, timeoutMs = 1e4) {
       try {
         return await fn();
       } finally {
-        await rm4(lockDir, { recursive: true, force: true }).catch(() => {
+        await rm5(lockDir, { recursive: true, force: true }).catch(() => {
         });
       }
     } catch (error2) {
@@ -28150,9 +28150,9 @@ function diffSnapshots(prev, current) {
 }
 async function cleanupTeamState(teamName, cwd2) {
   const root2 = absPath(cwd2, TeamPaths.root(teamName));
-  const { rm: rm4 } = await import("fs/promises");
+  const { rm: rm5 } = await import("fs/promises");
   try {
-    await rm4(root2, { recursive: true, force: true });
+    await rm5(root2, { recursive: true, force: true });
   } catch {
   }
 }
@@ -29264,6 +29264,11 @@ async function injectToLeaderPane(sessionName2, leaderPaneId, message) {
   }
   return sendToWorker(sessionName2, leaderPaneId, prefixed);
 }
+function isTmuxPaneNotFoundError(error2) {
+  const err = error2;
+  const text = [err?.stderr, err?.stdout, err?.message].filter((part) => typeof part === "string").join("\n").toLowerCase();
+  return /can't find pane|can't find window|can't find session|no such pane|pane not found|unknown pane/.test(text);
+}
 async function getWorkerLiveness(paneId) {
   try {
     const result = await tmuxCmdAsync([
@@ -29274,8 +29279,8 @@ async function getWorkerLiveness(paneId) {
       "#{pane_dead}"
     ]);
     return result.stdout.trim() === "0" ? "alive" : "dead";
-  } catch {
-    return "unknown";
+  } catch (error2) {
+    return isTmuxPaneNotFoundError(error2) ? "dead" : "unknown";
   }
 }
 async function isWorkerAlive(paneId) {
@@ -31362,6 +31367,34 @@ async function spawnV2Worker(opts) {
     ...outputFile ? { outputFile } : {}
   };
 }
+async function rollbackUnpersistedNativeWorktreeStartup(teamName, cwd2, cause) {
+  const safety = inspectTeamWorktreeCleanupSafety(teamName, cwd2);
+  if (!safety.hasEvidence) return;
+  const teamRoot = absPath(cwd2, TeamPaths.root(teamName));
+  const errorMessage = cause instanceof Error ? cause.message : String(cause);
+  try {
+    const cleanup = cleanupTeamWorktrees(teamName, cwd2);
+    if (cleanup.preserved.length === 0) {
+      await (0, import_promises13.rm)(teamRoot, { recursive: true, force: true });
+      return;
+    }
+    await (0, import_promises13.mkdir)(teamRoot, { recursive: true });
+    await (0, import_promises13.writeFile)((0, import_path89.join)(teamRoot, "startup-failure.json"), JSON.stringify({
+      reason: "startup_failed_before_config_persisted",
+      error: errorMessage,
+      preserved: cleanup.preserved,
+      recorded_at: (/* @__PURE__ */ new Date()).toISOString()
+    }, null, 2), "utf-8");
+  } catch (rollbackError) {
+    await (0, import_promises13.mkdir)(teamRoot, { recursive: true });
+    await (0, import_promises13.writeFile)((0, import_path89.join)(teamRoot, "startup-failure.json"), JSON.stringify({
+      reason: "startup_failed_before_config_persisted",
+      error: errorMessage,
+      rollback_error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+      recorded_at: (/* @__PURE__ */ new Date()).toISOString()
+    }, null, 2), "utf-8");
+  }
+}
 async function startTeamV2(config2) {
   const sanitized = sanitizeTeamName(config2.teamName);
   const leaderCwd = (0, import_path89.resolve)(config2.cwd);
@@ -31433,14 +31466,19 @@ async function startTeamV2(config2) {
   }
   const workerNames = Array.from({ length: config2.workerCount }, (_, index) => `worker-${index + 1}`);
   const workerWorktrees = /* @__PURE__ */ new Map();
-  if (worktreeMode !== "disabled") {
-    for (const workerName2 of workerNames) {
-      const worktree = ensureWorkerWorktree(sanitized, workerName2, leaderCwd, {
-        mode: worktreeMode,
-        requireCleanLeader: true
-      });
-      if (worktree) workerWorktrees.set(workerName2, worktree);
+  try {
+    if (worktreeMode !== "disabled") {
+      for (const workerName2 of workerNames) {
+        const worktree = ensureWorkerWorktree(sanitized, workerName2, leaderCwd, {
+          mode: worktreeMode,
+          requireCleanLeader: true
+        });
+        if (worktree) workerWorktrees.set(workerName2, worktree);
+      }
     }
+  } catch (error2) {
+    await rollbackUnpersistedNativeWorktreeStartup(sanitized, leaderCwd, error2);
+    throw error2;
   }
   const workerNameSet = new Set(workerNames);
   const startupAllocations = [];
@@ -31468,32 +31506,43 @@ async function startTeamV2(config2) {
       startupAllocations.push({ workerName: r.workerName, taskIndex: Number(r.taskId) });
     }
   }
-  for (let i = 0; i < workerNames.length; i++) {
-    const wName = workerNames[i];
-    const agentType = agentTypes[i % agentTypes.length] ?? agentTypes[0] ?? "claude";
-    await ensureWorkerStateDir(sanitized, wName, leaderCwd);
-    const overlayPath = await writeWorkerOverlay({
-      teamName: sanitized,
-      workerName: wName,
-      agentType,
-      tasks: config2.tasks.map((t, idx) => ({
-        id: String(idx + 1),
-        subject: t.subject,
-        description: t.description
-      })),
-      cwd: leaderCwd,
-      ...config2.rolePrompt ? { bootstrapInstructions: config2.rolePrompt } : {},
-      ...workerWorktrees.has(wName) ? { instructionStateRoot: "$OMC_TEAM_STATE_ROOT" } : {}
-    });
-    const worktree = workerWorktrees.get(wName);
-    if (worktree) {
-      const overlayContent = await (0, import_promises13.readFile)(overlayPath, "utf-8");
-      installWorktreeRootAgents(sanitized, wName, leaderCwd, worktree.path, overlayContent);
+  try {
+    for (let i = 0; i < workerNames.length; i++) {
+      const wName = workerNames[i];
+      const agentType = agentTypes[i % agentTypes.length] ?? agentTypes[0] ?? "claude";
+      await ensureWorkerStateDir(sanitized, wName, leaderCwd);
+      const overlayPath = await writeWorkerOverlay({
+        teamName: sanitized,
+        workerName: wName,
+        agentType,
+        tasks: config2.tasks.map((t, idx) => ({
+          id: String(idx + 1),
+          subject: t.subject,
+          description: t.description
+        })),
+        cwd: leaderCwd,
+        ...config2.rolePrompt ? { bootstrapInstructions: config2.rolePrompt } : {},
+        ...workerWorktrees.has(wName) ? { instructionStateRoot: "$OMC_TEAM_STATE_ROOT" } : {}
+      });
+      const worktree = workerWorktrees.get(wName);
+      if (worktree) {
+        const overlayContent = await (0, import_promises13.readFile)(overlayPath, "utf-8");
+        installWorktreeRootAgents(sanitized, wName, leaderCwd, worktree.path, overlayContent);
+      }
     }
+  } catch (error2) {
+    await rollbackUnpersistedNativeWorktreeStartup(sanitized, leaderCwd, error2);
+    throw error2;
   }
-  const session = await createTeamSession(sanitized, 0, leaderCwd, {
-    newWindow: Boolean(config2.newWindow)
-  });
+  let session;
+  try {
+    session = await createTeamSession(sanitized, 0, leaderCwd, {
+      newWindow: Boolean(config2.newWindow)
+    });
+  } catch (error2) {
+    await rollbackUnpersistedNativeWorktreeStartup(sanitized, leaderCwd, error2);
+    throw error2;
+  }
   const sessionName2 = session.sessionName;
   const leaderPaneId = session.leaderPaneId;
   const ownsWindow = session.sessionMode !== "split-pane";
@@ -84816,6 +84865,17 @@ async function executeTeamApiOperation(operation, args, fallbackCwd) {
       case "orphan-cleanup": {
         const teamName = String(args.team_name || "").trim();
         if (!teamName) return { ok: false, operation, error: { code: "invalid_input", message: "team_name is required" } };
+        const safety = inspectTeamWorktreeCleanupSafety(teamName, cwd2);
+        if (safety.hasEvidence && args.acknowledge_lost_worktree_recovery !== true) {
+          return {
+            ok: false,
+            operation,
+            error: {
+              code: "invalid_input",
+              message: "orphan_cleanup_blocked:worktree_recovery_evidence_present; pass acknowledge_lost_worktree_recovery=true only after manually preserving or intentionally discarding worker worktrees and root AGENTS backups"
+            }
+          };
+        }
         await teamCleanup(teamName, cwd2);
         return { ok: true, operation, data: { team_name: teamName } };
       }
